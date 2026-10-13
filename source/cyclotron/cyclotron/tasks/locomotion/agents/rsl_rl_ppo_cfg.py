@@ -6,7 +6,7 @@
 
 from dataclasses import MISSING
 
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 
 from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
@@ -87,6 +87,44 @@ class Asimov1PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
+class Asimov1OneLegPPORunnerCfg(Asimov1PPORunnerCfg):
+    """Conservative PPO settings for a narrow, contact-sensitive balance skill."""
+
+    num_steps_per_env = 32
+    max_iterations = 5000
+    save_interval = 100
+    experiment_name = "asimov1_one_leg"
+    run_name = "implicit_whole_body"
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=False,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=0.15, std_type="scalar"),
+    )
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128], activation="elu", obs_normalization=False
+    )
+    algorithm = RslRlPpoAlgorithmCfg(
+        optimizer="adam",
+        normalize_advantage_per_mini_batch=False,
+        rnd_cfg=None,
+        symmetry_cfg=None,
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.001,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=3.0e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

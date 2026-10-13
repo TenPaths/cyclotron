@@ -21,6 +21,26 @@ gym.register(
 )
 
 gym.register(
+    id="Asimov1-OneLeg-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.one_leg_env_cfg:Asimov1OneLegEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:Asimov1OneLegPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Asimov1-OneLeg-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.one_leg_env_cfg:Asimov1OneLegEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:Asimov1OneLegPPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Asimov1-Velocity-Play-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

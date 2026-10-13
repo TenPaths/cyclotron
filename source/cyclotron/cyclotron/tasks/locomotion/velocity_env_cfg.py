@@ -19,8 +19,8 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.utils import configclass
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+from isaaclab.utils.configclass import configclass
+from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 
 from cyclotron.assets.robots.asimov_1 import (
     ASIMOV_1_ACTION_SCALE,

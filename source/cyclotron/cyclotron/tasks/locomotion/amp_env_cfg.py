@@ -9,7 +9,7 @@ from pathlib import Path
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 
 from cyclotron.assets.robots.asimov_1 import ASIMOV_1_JOINT_NAMES
 

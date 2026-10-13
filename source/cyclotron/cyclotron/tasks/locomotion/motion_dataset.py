@@ -7,7 +7,7 @@ from dataclasses import MISSING
 import numpy as np
 import torch
 
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 from isaaclab.utils.math import quat_apply_inverse, quat_conjugate, quat_mul
 
 
