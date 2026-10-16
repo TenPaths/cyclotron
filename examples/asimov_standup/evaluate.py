@@ -7,12 +7,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 import torch
+from asimov_standup import TASK_ID
+from asimov_standup.mdp import RESET_MODES, STAND_HEIGHT, STAND_UPRIGHT
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
-
-from asimov_standup import TASK_ID
-from asimov_standup.mdp import RESET_MODES
 from play import latest_checkpoint
 
 
@@ -74,14 +73,15 @@ def main() -> None:
     default_joint_pos = robot.data.default_joint_pos
     assert default_joint_pos is not None
     with torch.inference_mode():
-        for step in range(raw_env.max_episode_length):
+        # The final configured step times out and auto-resets before returning.
+        for step in range(raw_env.max_episode_length - 1):
             obs, _, _, _ = env.step(policy(obs))
             height = robot.data.root_link_pos_w[:, 2]
             head_height = robot.data.body_link_pos_w[:, head_id, 2]
             upright = torch.clamp(-robot.data.projected_gravity_b[:, 2], 0.0, 1.0)
             max_height = torch.maximum(max_height, height)
             max_head_height = torch.maximum(max_head_height, head_height)
-            standing = (height >= 0.56) & (upright >= 0.9)
+            standing = (height >= STAND_HEIGHT) & (upright >= STAND_UPRIGHT)
             newly_standing = standing & (first_stand_step < 0)
             first_stand_step[newly_standing] = step
             reached_stand |= standing
@@ -108,7 +108,7 @@ def main() -> None:
     print(f"held_success_rate={held_stand.float().mean().item():.4f}")
     print(
         f"mean_standing_fraction="
-        f"{(standing_steps / raw_env.max_episode_length).mean().item():.4f}"
+        f"{(standing_steps / (raw_env.max_episode_length - 1)).mean().item():.4f}"
     )
     if reached_stand.any():
         mean_time = (

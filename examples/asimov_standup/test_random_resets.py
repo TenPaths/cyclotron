@@ -3,10 +3,14 @@
 import mujoco
 import numpy as np
 import torch
-from mjlab.envs import ManagerBasedRlEnv
-
 from asimov_standup.config import standup_env_cfg
-from asimov_standup.mdp import RESET_MODES, collision_bottom, reset_lying_pose
+from asimov_standup.mdp import (
+    RESET_MODES,
+    collision_bottom,
+    reset_lying_pose,
+    success_metric,
+)
+from mjlab.envs import ManagerBasedRlEnv
 
 cfg = standup_env_cfg(play=True)
 cfg.scene.num_envs = 32
@@ -19,9 +23,20 @@ try:
     data = mujoco.MjData(model)
     ids = np.flatnonzero((model.geom_group == 3) & (model.geom_bodyid != 0))
     orientations = set()
+    # Regression: this old default path used to skip floor correction.
+    reset_lying_pose(
+        env, None, mode="supine", joint_noise=0.08, standing_probability=0
+    )
+    for qpos in env.sim.data.qpos.detach().cpu().numpy():
+        data.qpos[:] = qpos
+        mujoco.mj_kinematics(model, data)
+        bottom = collision_bottom(model, data, ids)
+        assert 0.010 < bottom < 0.014, ("default supine", bottom)
+    print("PASS: default supine reset has floor clearance")
     for mode in RESET_MODES:
         reset_lying_pose(env, None, mode=mode, joint_noise=0.4, standing_probability=0)
         qposes = env.sim.data.qpos.detach().cpu().numpy().copy()
+        side_gravity = []
         joint_pos = robot.data.joint_pos
         limits = robot.data.soft_joint_pos_limits
         assert (joint_pos >= limits[..., 0] - 1e-6).all()
@@ -31,7 +46,15 @@ try:
             mujoco.mj_kinematics(model, data)
             bottom = collision_bottom(model, data, ids)
             assert 0.010 < bottom < 0.014, (mode, bottom)
+            if mode in {"left", "right"}:
+                rotation = np.empty(9)
+                mujoco.mju_quat2Mat(rotation, qpos[3:7])
+                side_gravity.append(-rotation.reshape(3, 3)[2, 1])
         assert np.std(qposes[:, 7:], axis=0).mean() > 0.08
+        if mode == "left":
+            assert min(side_gravity) > 0, side_gravity
+        elif mode == "right":
+            assert max(side_gravity) < 0, side_gravity
         if mode == "random":
             # Use the free joint rotation directly to classify lying direction.
             for qpos in qposes:
@@ -67,5 +90,11 @@ try:
     reset_lying_pose(env, None, mode="random", joint_noise=0.4, standing_probability=0)
     assert torch.equal(first, env.sim.data.qpos)
     print("PASS: reproducible poses with fixed seed")
+    reset_lying_pose(env, None, standing_probability=1.0)
+    assert not env._standup_recovery_eligible.any()
+    assert not success_metric(env, minimum_height=0.0).any()
+    reset_lying_pose(env, None, standing_probability=0.0)
+    assert env._standup_recovery_eligible.all()
+    print("PASS: standing resets are excluded from recovery success")
 finally:
     env.close()

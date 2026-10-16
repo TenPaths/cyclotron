@@ -2,9 +2,8 @@
 
 This extension loads Menlo Research's official Asimov 1 MJCF from the Cyclotron
 checkout and trains a 23-DoF position-control policy with PPO. The default
-discovery run starts from randomized supine poses on flat ground. Prone and mixed
-resets are available explicitly; learning both directions at once is much harder
-and is not the recommended first run.
+discovery run starts from randomized back, belly and side poses on flat ground;
+use `--reset-mode supine` for an easier staged discovery run.
 
 The reward is deliberately staged: dense height gain from the actual floor pose,
 height-gated pelvis righting, dense head height, a broad coupled stable-standing
@@ -28,7 +27,7 @@ cd examples/asimov_standup
 # Validate model loading, contacts, resets, observations, rewards, and CUDA stepping.
 uv run --project ~/mjlab python smoke_test.py
 
-# RTX 4060 starting point. Reduce to 128 if GPU memory is tight.
+# RTX 4060 staged-discovery starting point. Reduce to 128 if memory is tight.
 uv run --project ~/mjlab python train.py --num-envs 512 --max-iterations 10000 \
   --reset-mode supine --assist-decay-iterations 2000 --run-name supine_v4
 
@@ -83,8 +82,9 @@ uv run --project ~/mjlab python evaluate.py --reset-mode supine
 uv run --project ~/mjlab python play.py --agent zero --port 8081
 ```
 
-Training from scratch is a long-running optimization job. Monitor
-`Metrics/stand_success` and `Metrics/pelvis_height` in the training output. Do not
+Training from scratch is a long-running optimization job. `Metrics/stand_success`
+excludes reverse-curriculum episodes that started standing; also monitor
+`Metrics/upright`, `Metrics/posture_error`, and `Metrics/base_speed`. Do not
 resume the old `supine_prone` checkpoint: its collapsed policy and exploration state
 are part of the bad local optimum. A short
 smoke run checks the complete PPO path but is not expected to learn the behavior:
@@ -103,7 +103,7 @@ both sides. `left` and `right` isolate side starts. Joint noise is clamped to
 soft joint limits. Diverse poses are positioned 12 mm above the flat floor using
 collision-shape forward kinematics, then settle under physics. This does not
 guarantee every randomized posture is recoverable by an old checkpoint.
-Training and evaluation retain their original supine/0.08 defaults unless
+Training now defaults to random/0.4; evaluation retains supine/0.08 unless
 explicitly overridden. Run `python test_random_resets.py` in the mjlab environment
 to check reset directions, limits, floor clearance and partial reset isolation.
 
@@ -141,3 +141,11 @@ CERN-OHL-S-2.0. Keep those upstream license files with any redistributed assets.
   smoothness and robustness refinement. This baseline implements the discovery phase;
   deployable hardware control still requires a second refinement/domain-randomization
   phase and safety validation.
+
+This example was tested against mjlab commit
+`45b1e263ec1c3c0d2c3211b458135d80bb7030df`. The actor currently observes pelvis
+height and world-derived base linear velocity, so the provided policy is
+simulation-only unless equivalent state estimates are available. Moving these
+signals to the critic changes the actor observation size and requires retraining.
+Hardware deployment also needs contact-force penalties, latency/domain
+randomization, and actuator safety validation; those are not claimed here.

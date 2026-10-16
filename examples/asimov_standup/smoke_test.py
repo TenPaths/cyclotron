@@ -1,13 +1,14 @@
 """Build and step the Asimov stand-up environment without training."""
 
 import torch
-from mjlab.envs import ManagerBasedRlEnv
-
 from asimov_standup.config import standup_env_cfg
+from mjlab.envs import ManagerBasedRlEnv
 
 
 def main() -> None:
-    cfg = standup_env_cfg(play=True)
+    # Training config intentionally includes the height-assist event.
+    cfg = standup_env_cfg(play=False)
+    assert "height_assist" in cfg.events
     cfg.scene.num_envs = 4
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
     observations, _ = env.reset()

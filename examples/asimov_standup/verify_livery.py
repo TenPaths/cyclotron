@@ -5,9 +5,8 @@ import os
 os.environ["MUJOCO_GL"] = "egl"
 import mujoco
 import numpy as np
-from PIL import Image
-
 from asimov_standup import asset
+from PIL import Image
 
 spec = asset.get_spec()
 model = spec.compile()

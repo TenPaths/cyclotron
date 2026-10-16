@@ -38,13 +38,14 @@ def apply_refinement_preset(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards["standing_posture"].func = mdp.refined_standing_posture
     cfg.rewards["standing_posture"].weight = 4.0
     cfg.rewards["standing_posture"].params.update(
-        {"std": 0.25, "activation_height": 0.42}
+        {"std": 0.25, "activation_height": 0.50}
     )
     cfg.rewards["base_motion"].weight = -0.05
     cfg.rewards["joint_torque"].weight = -5.0e-6
     cfg.rewards["joint_velocity"].weight = -1.0e-4
-    cfg.rewards["action_rate"].weight = -0.01
-    cfg.rewards["joint_limits"].weight = -1.0
+    cfg.rewards["action_rate"].weight = -0.05
+    cfg.rewards["action_acceleration"].weight = -0.02
+    cfg.rewards["joint_limits"].weight = -5.0
 
 
 def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -119,7 +120,8 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=mdp.reset_lying_pose,
             mode="reset",
             params={
-                "mode": "supine",
+                "mode": "random",
+                "joint_noise": 0.4,
                 "standing_probability": 0.0 if play else 0.25,
                 "asset_cfg": ROBOT,
             },
@@ -156,14 +158,14 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "standing": RewardTermCfg(
             func=mdp.standing_bonus,
             weight=8.0,
-            params={"activation_height": 0.28, "transition_width": 0.05},
+            params={"activation_height": 0.52, "transition_width": 0.03},
         ),
         "standing_posture": RewardTermCfg(
             func=mdp.standing_posture,
             weight=1.0,
             params={
                 "std": 0.35,
-                "activation_height": 0.45,
+                "activation_height": 0.50,
                 "asset_cfg": ALL_JOINTS,
             },
         ),
@@ -178,11 +180,15 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "action_rate": RewardTermCfg(
             func=base_mdp.action_rate_l2,
-            weight=-0.001,
+            weight=-0.01,
+        ),
+        "action_acceleration": RewardTermCfg(
+            func=base_mdp.action_acc_l2,
+            weight=-0.005,
         ),
         "joint_limits": RewardTermCfg(
             func=base_mdp.joint_pos_limits,
-            weight=-0.5,
+            weight=-2.0,
         ),
     }
 
@@ -203,7 +209,7 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         metrics={
             "stand_success": MetricsTermCfg(
                 func=mdp.success_metric,
-                params={"minimum_height": 0.56},
+                params={"minimum_height": mdp.STAND_HEIGHT},
             ),
             "pelvis_height": MetricsTermCfg(func=mdp.mean_root_height),
             "head_height": MetricsTermCfg(

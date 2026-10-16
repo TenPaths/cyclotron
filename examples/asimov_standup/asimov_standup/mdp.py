@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 _ROBOT_CFG = SceneEntityCfg("robot")
 RESET_MODES = ("supine", "prone", "left", "right", "mixed", "random")
+STAND_HEIGHT = 0.56
+STAND_UPRIGHT = 0.9
 
 
 def _floor_pose_correction(env, env_ids, root_pose):
@@ -144,6 +146,13 @@ def reset_lying_pose(
         value = -1.0 if mode == "supine" else 1.0
         side = torch.full((count,), value, device=env.device)
     standing = torch.rand(count, device=env.device) < standing_probability
+    recovery_eligible = getattr(env, "_standup_recovery_eligible", None)
+    if recovery_eligible is None:
+        recovery_eligible = torch.ones(
+            env.num_envs, dtype=torch.bool, device=env.device
+        )
+        env._standup_recovery_eligible = recovery_eligible
+    recovery_eligible[env_ids] = ~standing
     roll = sample_uniform(-0.08, 0.08, (count,), env.device)
     pitch = side * (math.pi / 2) + sample_uniform(-0.10, 0.10, (count,), env.device)
     yaw = sample_uniform(-math.pi, math.pi, (count,), env.device)
@@ -151,7 +160,7 @@ def reset_lying_pose(
         pose = (
             torch.randint(0, 4, (count,), device=env.device)
             if mode == "random"
-            else torch.full((count,), 2 if mode == "left" else 3, device=env.device)
+            else torch.full((count,), 3 if mode == "left" else 2, device=env.device)
         )
         # Supine, prone and either side, with modest tilt and arbitrary heading.
         rolls = torch.tensor([0, 0, math.pi / 2, -math.pi / 2], device=env.device)
@@ -188,10 +197,10 @@ def reset_lying_pose(
     joint_vel = default_vel[env_ids].clone()
     joint_vel += sample_uniform(-0.05, 0.05, joint_vel.shape, env.device)
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-    # Preserve legacy small-noise supine/prone resets for old evaluations.
-    if mode in {"left", "right", "random"} or joint_noise > 0.08:
-        _floor_pose_correction(env, env_ids, root_pose)
-        asset.write_root_link_pose_to_sim(root_pose, env_ids=env_ids)
+    # Teleporting a configured pelvis height can leave distal collision shapes
+    # below the floor. Correct every pose before the first physics step.
+    _floor_pose_correction(env, env_ids, root_pose)
+    asset.write_root_link_pose_to_sim(root_pose, env_ids=env_ids)
 
 
 class height_assist:
@@ -216,7 +225,8 @@ class height_assist:
         progress = min(env.common_step_counter / max(decay_steps, 1), 1.0)
         height = self._asset.data.root_link_pos_w[:, 2]
         height_error = torch.clamp(1.0 - height / target_height, 0.0, 1.0)
-        force_z = max_force * (1.0 - progress) * height_error
+        upright_gate = (_upright_score(self._asset) > 0.8).float()
+        force_z = max_force * (1.0 - progress) * height_error * upright_gate
         forces = torch.zeros((env.num_envs, self._num_bodies, 3), device=self._device)
         torques = torch.zeros_like(forces)
         forces[:, :, 2] = force_z[:, None]
@@ -341,11 +351,14 @@ def success_metric(
     minimum_height: float,
     asset_cfg: SceneEntityCfg = _ROBOT_CFG,
 ) -> torch.Tensor:
-    """Per-step stand success indicator for logs."""
+    """Per-step recovery success, excluding episodes initialized standing."""
     asset: Entity = env.scene[asset_cfg.name]
     height_ok = asset.data.root_link_pos_w[:, 2] >= minimum_height
     upright_ok = _upright_score(asset) >= 0.9
-    return (height_ok & upright_ok).float()
+    eligible = getattr(env, "_standup_recovery_eligible", None)
+    if eligible is None:
+        eligible = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    return (height_ok & upright_ok & eligible).float()
 
 
 def mean_upright(

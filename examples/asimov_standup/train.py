@@ -6,13 +6,12 @@ import argparse
 import os
 from pathlib import Path
 
-from mjlab.scripts.train import TrainConfig, launch_training
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
-
 from asimov_standup import TASK_ID
 from asimov_standup.config import apply_refinement_preset
 from asimov_standup.mdp import RESET_MODES
 from asimov_standup.runner import WARM_START_ENV, WARM_START_STD_ENV
+from mjlab.scripts.train import TrainConfig, launch_training
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
 
 def main() -> None:
@@ -36,11 +35,11 @@ def main() -> None:
     parser.add_argument(
         "--reset-mode",
         choices=RESET_MODES,
-        default="supine",
+        default="random",
         help="Train one recovery direction first; mixed is substantially harder.",
     )
     parser.add_argument("--log-root", default="logs/rsl_rl")
-    parser.add_argument("--joint-noise", type=float, default=0.08)
+    parser.add_argument("--joint-noise", type=float, default=0.4)
     parser.add_argument(
         "--warm-start",
         type=Path,

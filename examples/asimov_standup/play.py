@@ -8,13 +8,12 @@ from pathlib import Path
 
 import torch
 import viser
+from asimov_standup import TASK_ID
+from asimov_standup.mdp import RESET_MODES
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.viewer import ViserPlayViewer
-
-from asimov_standup import TASK_ID
-from asimov_standup.mdp import RESET_MODES
 
 
 def latest_checkpoint(log_root: Path) -> Path:
