@@ -11,9 +11,20 @@ objective, and nominal-posture tracking that activates only after the robot has
 risen. Twenty-five percent
 of training resets start near the standing goal (reverse curriculum), so PPO sees
 successful states before it can reach them from the floor. Discovery-phase
-regularizers are intentionally weak. During training, an upward force of at most 180 N
-(approximately 57% of robot weight) helps early exploration and linearly decays to
-zero over 2,000 PPO iterations by default.
+regularizers are intentionally weak. During training, an upward pull on the head of at
+most 180 N (approximately 57% of robot weight) acts once the pelvis is above 0.35 m,
+so it also helps lift a bent-over trunk, and linearly decays to zero over 4,000 PPO
+iterations by default. Training also kicks the robot by up to 0.5 m/s horizontally
+every 1-3 s and penalizes ankle roll within 0.02 rad of its limit.
+
+Motors now use a DC torque-speed curve and command delays of 0-5 physics steps
+(0-25 ms), with delay sampled per episode. Play and evaluation use the same
+motor model, but disable training pushes and height assistance. Existing actor
+checkpoints still load because observations and action ordering are unchanged;
+their previous scores do not transfer to these changed dynamics. Re-evaluate
+them and use actor-only warm starts for adaptation. The motor table's velocity
+limits are approximated as no-load speeds, not hard speed clamps. These changes
+and the new reward weights still need training validation.
 
 ## Commands
 
@@ -29,7 +40,7 @@ uv run --project ~/mjlab python smoke_test.py
 
 # RTX 4060 staged-discovery starting point. Reduce to 128 if memory is tight.
 uv run --project ~/mjlab python train.py --num-envs 512 --max-iterations 10000 \
-  --reset-mode supine --assist-decay-iterations 2000 --run-name supine_v4
+  --reset-mode supine --assist-decay-iterations 4000 --run-name supine_dc
 
 # Live metrics at http://localhost:6006. The setuptools overlay supplies
 # pkg_resources, which TensorBoard 2.20 still imports.
@@ -100,12 +111,14 @@ submodule. Set `ASIMOV_1_MODEL_DIR` if it is stored elsewhere.
 Playback defaults to `--reset-mode random --joint-noise 0.4 --seed 42`.
 `mixed` retains its original meaning (back/belly only); `random` also includes
 both sides. `left` and `right` isolate side starts. Joint noise is clamped to
-soft joint limits. Diverse poses are positioned 12 mm above the flat floor using
-collision-shape forward kinematics, then settle under physics. This does not
+soft joint limits, and poses whose limbs overlap (crossed knees) are resampled.
+Every pose is positioned 12 mm above the flat floor using collision-shape forward
+kinematics, then settles under physics. This does not
 guarantee every randomized posture is recoverable by an old checkpoint.
 Training now defaults to random/0.4; evaluation retains supine/0.08 unless
 explicitly overridden. Run `python test_random_resets.py` in the mjlab environment
-to check reset directions, limits, floor clearance and partial reset isolation.
+to check reset directions, limits, floor clearance, self-collision and partial
+reset isolation.
 
 ## Third-party assets
 

@@ -21,7 +21,9 @@ try:
     robot = env.scene["robot"]
     model = env.sim.mj_model
     data = mujoco.MjData(model)
-    ids = np.flatnonzero((model.geom_group == 3) & (model.geom_bodyid != 0))
+    robot_ids = robot.indexing.geom_ids.detach().cpu().numpy()
+    ids = robot_ids[model.geom_group[robot_ids] == 3]
+    assert all(model.geom_type[i] != mujoco.mjtGeom.mjGEOM_PLANE for i in ids)
     orientations = set()
     # Regression: this old default path used to skip floor correction.
     reset_lying_pose(
@@ -46,6 +48,11 @@ try:
             mujoco.mj_kinematics(model, data)
             bottom = collision_bottom(model, data, ids)
             assert 0.010 < bottom < 0.014, (mode, bottom)
+            mujoco.mj_fwdPosition(model, data)
+            contact = data.contact
+            robot_pair = np.isin(contact.geom1, ids) & np.isin(contact.geom2, ids)
+            depth = -contact.dist[robot_pair].min(initial=0.0)
+            assert depth <= 0.001, (mode, "self-penetration", depth)
             if mode in {"left", "right"}:
                 rotation = np.empty(9)
                 mujoco.mju_quat2Mat(rotation, qpos[3:7])
@@ -96,5 +103,27 @@ try:
     reset_lying_pose(env, None, standing_probability=0.0)
     assert env._standup_recovery_eligible.all()
     print("PASS: standing resets are excluded from recovery success")
+    feet_term = env.reward_manager.get_term_cfg("feet_flat")
+    reset_lying_pose(env, None, standing_probability=1.0)
+    env.sim.forward()
+    flat = feet_term.func(env, **feet_term.params)
+    assert flat.mean() > 0.7, ("nominal stance should have flat feet", flat)
+    reset_lying_pose(env, None, standing_probability=0.0)
+    env.sim.forward()
+    flat = feet_term.func(env, **feet_term.params)
+    assert flat.max() < 0.05, ("lying poses must be gated out", flat)
+    print("PASS: feet_flat rewards a flat stance and ignores lying poses")
+    stop_term = env.reward_manager.get_term_cfg("ankle_roll_stop")
+    reset_lying_pose(env, None, standing_probability=1.0)
+    env.sim.forward()
+    assert stop_term.func(env, **stop_term.params).max() < 0.01, "nominal ankles are free"
+    ankle_ids = stop_term.params["asset_cfg"].joint_ids
+    joint_pos = robot.data.joint_pos.clone()
+    joint_pos[:, ankle_ids] = robot.data.soft_joint_pos_limits[:, ankle_ids, 1]
+    robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(joint_pos))
+    env.sim.forward()
+    at_stop = stop_term.func(env, **stop_term.params)
+    assert torch.allclose(at_stop, torch.full_like(at_stop, 2.0)), at_stop
+    print("PASS: ankle_roll_stop is zero at the nominal pose and 1 per joint at its limit")
 finally:
     env.close()

@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument(
         "--assist-decay-iterations",
         type=int,
-        default=2_000,
+        default=4_000,
         help="Linearly remove the upward assist over this many PPO iterations.",
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -36,7 +36,7 @@ def main() -> None:
         "--reset-mode",
         choices=RESET_MODES,
         default="random",
-        help="Train one recovery direction first; mixed is substantially harder.",
+        help="Lying directions to start from; supine is the easier staged run.",
     )
     parser.add_argument("--log-root", default="logs/rsl_rl")
     parser.add_argument("--joint-noise", type=float, default=0.4)

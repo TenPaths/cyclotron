@@ -26,9 +26,15 @@ from . import mdp
 from .asset import JOINT_NAMES, get_robot_cfg
 
 ROBOT = SceneEntityCfg("robot")
-PELVIS = SceneEntityCfg("robot", body_names=("pelvis_link",))
 HEAD = SceneEntityCfg("robot", body_names=("neck_pitch_link",))
+HEAD_STAND_HEIGHT = 1.05  # m; just below the nominal stance's 1.105 m
+FEET = SceneEntityCfg(
+    "robot", body_names=("left_ankle_roll_link", "right_ankle_roll_link")
+)
 ALL_JOINTS = SceneEntityCfg("robot", joint_names=JOINT_NAMES)
+ANKLE_ROLL = SceneEntityCfg(
+    "robot", joint_names=("left_ankle_roll_joint", "right_ankle_roll_joint")
+)
 
 
 def apply_refinement_preset(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -133,10 +139,18 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="step",
             params={
                 "max_force": 180.0,
-                "decay_steps": 48_000,
-                "target_height": 0.60,
-                "asset_cfg": PELVIS,
+                "decay_steps": 96_000,  # 4,000 iterations of 24 steps
+                "target_height": HEAD_STAND_HEIGHT,
+                "pelvis_gate_height": 0.35,  # above sitting 0.10 m, below kneeling 0.44 m
+                "asset_cfg": HEAD,
             },
+        )
+        # Same horizontal kick range as mjlab's velocity task.
+        events["push_robot"] = EventTermCfg(
+            func=base_mdp.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(1.0, 3.0),
+            params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
         )
 
     rewards = {
@@ -153,7 +167,7 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "head_rising": RewardTermCfg(
             func=mdp.body_height_progress,
             weight=8.0,
-            params={"floor": 0.08, "target": 1.05, "asset_cfg": HEAD},
+            params={"floor": 0.08, "target": HEAD_STAND_HEIGHT, "asset_cfg": HEAD},
         ),
         "standing": RewardTermCfg(
             func=mdp.standing_bonus,
@@ -168,6 +182,11 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "activation_height": 0.50,
                 "asset_cfg": ALL_JOINTS,
             },
+        ),
+        "feet_flat": RewardTermCfg(
+            func=mdp.feet_flat,
+            weight=2.0,
+            params={"std_deg": 8.0, "activation_height": 0.50, "asset_cfg": FEET},
         ),
         "base_motion": RewardTermCfg(func=mdp.base_motion_l2, weight=-0.01),
         "joint_torque": RewardTermCfg(
@@ -189,6 +208,12 @@ def standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "joint_limits": RewardTermCfg(
             func=base_mdp.joint_pos_limits,
             weight=-2.0,
+        ),
+        # Keeps a policy from using the 0.1 rad hard stop as a rigid ankle.
+        "ankle_roll_stop": RewardTermCfg(
+            func=mdp.joint_stop_proximity,
+            weight=-1.0,
+            params={"margin": 0.02, "asset_cfg": ANKLE_ROLL},
         ),
     }
 

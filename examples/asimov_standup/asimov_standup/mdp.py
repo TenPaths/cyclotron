@@ -11,7 +11,11 @@ import torch
 from mjlab.entity import Entity
 from mjlab.envs.mdp.events import resolve_env_ids
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_from_euler_xyz, sample_uniform
+from mjlab.utils.lab_api.math import (
+    quat_apply_inverse,
+    quat_from_euler_xyz,
+    sample_uniform,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -20,21 +24,43 @@ _ROBOT_CFG = SceneEntityCfg("robot")
 RESET_MODES = ("supine", "prone", "left", "right", "mixed", "random")
 STAND_HEIGHT = 0.56
 STAND_UPRIGHT = 0.9
+SELF_PENETRATION_TOLERANCE = 0.001  # m; chosen, ignores sub-millimetre touching
+MAX_POSE_RESAMPLES = 10  # chosen; measured 7.5% of random/0.4 poses cross the knees
+RISEN_GATE_SHARPNESS = 20.0  # 1/m; the posture terms' original gate slope
+
+
+def _reset_fk(env):
+    """Private CPU data, so a partial reset never forwards or disturbs other GPU worlds."""
+    cache = getattr(env, "_standup_reset_fk", None)
+    if cache is None:
+        model = env.sim.mj_model
+        robot_ids = env.scene["robot"].indexing.geom_ids.detach().cpu().numpy()
+        ids = robot_ids[model.geom_group[robot_ids] == 3]
+        cache = (mujoco.MjData(model), ids)
+        env._standup_reset_fk = cache
+    return cache
+
+
+def self_penetrating(env, env_ids) -> torch.Tensor:
+    """Which written reset poses overlap their own collision shapes."""
+    model = env.sim.mj_model
+    data, ids = _reset_fk(env)
+    hits = []
+    for qpos in env.sim.data.qpos[env_ids].detach().cpu().numpy():
+        data.qpos[:] = qpos
+        mujoco.mj_fwdPosition(model, data)
+        contact = data.contact
+        # The floor plane hangs off mjlab's terrain body, not the world body.
+        robot_pair = np.isin(contact.geom1, ids) & np.isin(contact.geom2, ids)
+        overlap = robot_pair & (contact.dist < -SELF_PENETRATION_TOLERANCE)
+        hits.append(bool(overlap.any()))
+    return torch.tensor(hits, device=env.device)
 
 
 def _floor_pose_correction(env, env_ids, root_pose):
-    """Place collision geometry just above the flat floor using FK.
-
-    A private CPU data object avoids forwarding or disturbing other GPU worlds
-    during a partial reset.
-    """
+    """Place collision geometry just above the flat floor using FK."""
     model = env.sim.mj_model
-    cache = getattr(env, "_standup_reset_fk", None)
-    if cache is None:
-        ids = np.flatnonzero((model.geom_group == 3) & (model.geom_bodyid != 0))
-        cache = (mujoco.MjData(model), ids)
-        env._standup_reset_fk = cache
-    data, ids = cache
+    data, ids = _reset_fk(env)
     qposes = env.sim.data.qpos[env_ids].detach().cpu().numpy()
     floors = env.scene.env_origins[env_ids, 2].detach().cpu().numpy()
     offsets = []
@@ -118,7 +144,6 @@ def reset_lying_pose(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _ROBOT_CFG,
-    root_height_range: tuple[float, float] = (0.13, 0.18),
     joint_noise: float = 0.08,
     mode: str = "supine",
     standing_probability: float = 0.10,
@@ -174,8 +199,6 @@ def reset_lying_pose(
     root_pose = torch.zeros((count, 7), device=env.device)
     root_pose[:, :3] = env.scene.env_origins[env_ids]
     root_pose[:, :2] += sample_uniform(-0.08, 0.08, (count, 2), env.device)
-    root_pose[:, 2] += sample_uniform(*root_height_range, (count,), env.device)
-    root_pose[standing, 2] = env.scene.env_origins[env_ids[standing], 2] + 0.63
     root_pose[:, 3:7] = quat_from_euler_xyz(roll, pitch, yaw)
     asset.write_root_link_pose_to_sim(root_pose, env_ids=env_ids)
 
@@ -186,19 +209,36 @@ def reset_lying_pose(
     default_vel = asset.data.default_joint_vel
     limits = asset.data.soft_joint_pos_limits
     assert default_pos is not None and default_vel is not None and limits is not None
-    joint_pos = default_pos[env_ids].clone()
-    joint_pos += sample_uniform(-joint_noise, joint_noise, joint_pos.shape, env.device)
-    if standing.any():
-        standing_shape = joint_pos[standing].shape
-        joint_pos[standing] = default_pos[env_ids[standing]] + sample_uniform(
-            -0.025, 0.025, standing_shape, env.device
+
+    def sample_joint_pos() -> torch.Tensor:
+        joint_pos = default_pos[env_ids].clone()
+        joint_pos += sample_uniform(
+            -joint_noise, joint_noise, joint_pos.shape, env.device
         )
-    joint_pos.clamp_(limits[env_ids, :, 0], limits[env_ids, :, 1])
+        if standing.any():
+            standing_shape = joint_pos[standing].shape
+            joint_pos[standing] = default_pos[env_ids[standing]] + sample_uniform(
+                -0.025, 0.025, standing_shape, env.device
+            )
+        return joint_pos.clamp_(limits[env_ids, :, 0], limits[env_ids, :, 1])
+
+    joint_pos = sample_joint_pos()
     joint_vel = default_vel[env_ids].clone()
     joint_vel += sample_uniform(-0.05, 0.05, joint_vel.shape, env.device)
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-    # Teleporting a configured pelvis height can leave distal collision shapes
-    # below the floor. Correct every pose before the first physics step.
+    # Uniform joint noise can cross the knees; physics would kick them apart.
+    for attempt in range(MAX_POSE_RESAMPLES + 1):
+        overlapping = self_penetrating(env, env_ids)
+        if not overlapping.any():
+            break
+        if attempt == MAX_POSE_RESAMPLES:
+            raise RuntimeError(
+                f"{int(overlapping.sum())} reset poses still self-penetrate after "
+                f"{MAX_POSE_RESAMPLES} resamples (joint_noise={joint_noise})"
+            )
+        joint_pos[overlapping] = sample_joint_pos()[overlapping]
+        asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    # The root is written at floor level; lift every pose before the first physics step.
     _floor_pose_correction(env, env_ids, root_pose)
     asset.write_root_link_pose_to_sim(root_pose, env_ids=env_ids)
 
@@ -219,17 +259,19 @@ class height_assist:
         max_force: float,
         decay_steps: int,
         target_height: float,
+        pelvis_gate_height: float,
         asset_cfg: SceneEntityCfg,
     ) -> None:
         del env_ids, asset_cfg
         progress = min(env.common_step_counter / max(decay_steps, 1), 1.0)
-        height = self._asset.data.root_link_pos_w[:, 2]
+        height = self._asset.data.body_link_pos_w[:, self._body_ids, 2]
         height_error = torch.clamp(1.0 - height / target_height, 0.0, 1.0)
-        upright_gate = (_upright_score(self._asset) > 0.8).float()
-        force_z = max_force * (1.0 - progress) * height_error * upright_gate
+        # Pull once off the floor, bent over or not: lifting the trunk is the hard step.
+        risen = self._asset.data.root_link_pos_w[:, 2] > pelvis_gate_height
+        force_z = max_force * (1.0 - progress) * height_error * risen[:, None]
         forces = torch.zeros((env.num_envs, self._num_bodies, 3), device=self._device)
         torques = torch.zeros_like(forces)
-        forces[:, :, 2] = force_z[:, None]
+        forces[:, :, 2] = force_z
         self._asset.write_external_wrench_to_sim(
             forces, torques, body_ids=self._body_ids
         )
@@ -240,6 +282,12 @@ class height_assist:
 
 def _upright_score(asset: Entity) -> torch.Tensor:
     return torch.clamp(-asset.data.projected_gravity_b[:, 2], 0.0, 1.0)
+
+
+def _risen_gate(asset: Entity, activation_height: float) -> torch.Tensor:
+    return torch.sigmoid(
+        RISEN_GATE_SHARPNESS * (asset.data.root_link_pos_w[:, 2] - activation_height)
+    )
 
 
 def height_progress(
@@ -300,10 +348,37 @@ def standing_posture(
         - default_pos[:, asset_cfg.joint_ids]
     )
     pose_score = torch.exp(-torch.mean(torch.square(error), dim=1) / std**2)
-    height_gate = torch.sigmoid(
-        20.0 * (asset.data.root_link_pos_w[:, 2] - activation_height)
+    return pose_score * _risen_gate(asset, activation_height)
+
+
+def feet_flat(
+    env: ManagerBasedRlEnv,
+    std_deg: float,
+    activation_height: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward soles parallel to the floor once the robot has risen."""
+    asset: Entity = env.scene[asset_cfg.name]
+    quat = asset.data.body_link_quat_w[:, asset_cfg.body_ids]
+    down = torch.tensor((0.0, 0.0, -1.0), device=env.device).expand(
+        quat.shape[:-1] + (3,)
     )
-    return pose_score * height_gate
+    tilt_sq = torch.sum(torch.square(quat_apply_inverse(quat, down)[..., :2]), dim=-1)
+    flat = torch.exp(-tilt_sq / math.sin(math.radians(std_deg)) ** 2).mean(dim=1)
+    return flat * _risen_gate(asset, activation_height)
+
+
+def joint_stop_proximity(
+    env: ManagerBasedRlEnv,
+    margin: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Squared approach into the last `margin` rad before each soft limit; 1 at it."""
+    asset: Entity = env.scene[asset_cfg.name]
+    q = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]
+    into = torch.maximum(limits[..., 0] + margin - q, q - limits[..., 1] + margin)
+    return torch.sum(torch.square(torch.clamp(into, min=0.0) / margin), dim=1)
 
 
 def refined_standing_posture(
@@ -325,9 +400,7 @@ def refined_standing_posture(
         - default_pos[:, asset_cfg.joint_ids]
     )
     pose_score = torch.exp(-torch.mean(torch.square(error), dim=1) / std**2)
-    height_gate = torch.sigmoid(
-        20.0 * (asset.data.root_link_pos_w[:, 2] - activation_height)
-    )
+    height_gate = _risen_gate(asset, activation_height)
     upright = torch.square(_upright_score(asset))
     lin_speed = torch.linalg.vector_norm(asset.data.root_link_lin_vel_w, dim=1)
     ang_speed = torch.linalg.vector_norm(asset.data.root_link_ang_vel_w, dim=1)
@@ -354,7 +427,7 @@ def success_metric(
     """Per-step recovery success, excluding episodes initialized standing."""
     asset: Entity = env.scene[asset_cfg.name]
     height_ok = asset.data.root_link_pos_w[:, 2] >= minimum_height
-    upright_ok = _upright_score(asset) >= 0.9
+    upright_ok = _upright_score(asset) >= STAND_UPRIGHT
     eligible = getattr(env, "_standup_recovery_eligible", None)
     if eligible is None:
         eligible = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
